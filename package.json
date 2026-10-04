@@ -1,0 +1,59 @@
+{
+  "name": "pi-cpt",
+  "version": "0.1.1",
+  "description": "Dedicated compaction model and custom context status for Pi.",
+  "keywords": [
+    "compaction",
+    "pi",
+    "pi-package"
+  ],
+  "homepage": "https://github.com/ekil1100/pi-cpt#readme",
+  "bugs": {
+    "url": "https://github.com/ekil1100/pi-cpt/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ekil1100/pi-cpt.git"
+  },
+  "files": [
+    "dist",
+    "pi-cpt.example.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "dev": "vp pack --watch",
+    "test": "vp test run",
+    "check": "vp check",
+    "prepublishOnly": "vp check && vp test run && vp pack"
+  },
+  "dependencies": {
+    "effect": "^3.22.2"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.0.1",
+    "@earendil-works/pi-coding-agent": "1.0.1",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vite-plus": "1.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "packageManager": "bun@1.4.2",
+  "pi": {
+    "extensions": [
+      "./dist/index.mjs"
+    ]
+  }
+}

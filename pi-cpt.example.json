@@ -1,0 +1,7 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "thinkingLevel": "low",
+  "showStatus": true,
+  "status": ["percent", "used"]
+}
