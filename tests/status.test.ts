@@ -29,6 +29,7 @@ test.each(modes)(
       await writeFile(join(dir, "pi-cpt.json"), JSON.stringify(value));
       const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
       piCpt({
+        registerCommand: vi.fn(),
         on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
           handlers.set(name, handler);
           return () => {};

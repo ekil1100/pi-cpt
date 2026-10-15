@@ -43,12 +43,14 @@
   "devDependencies": {
     "@earendil-works/pi-ai": "1.0.1",
     "@earendil-works/pi-coding-agent": "1.0.1",
+    "@earendil-works/pi-tui": "1.0.1",
     "@types/node": "^26.1.1",
     "typescript": "^7.0.2",
     "vite-plus": "1.0.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "packageManager": "bun@1.4.2",
   "pi": {

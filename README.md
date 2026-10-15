@@ -61,6 +61,11 @@ The percentage or token count describes your conversation's context; the model n
 
 ## Use
 
+- `/cpt` toggles dedicated compaction for the current session. Disabling it hides the cpt status and uses Pi's default compaction. A new session or `/reload` enables it again when a model is configured.
+- `/cpt model` opens a searchable model picker in the interactive terminal. Type to filter, use the selection keys to navigate, confirm to save, or cancel to keep the current model. The configured model appears first. Only available authenticated chat models are listed.
+
+The selected model is saved to `pi-cpt.json` and takes effect on the next compaction; other settings are preserved. Selecting a model leaves the current enable/disable state unchanged and never changes your conversation model. If no configuration exists, use `/cpt model` to create one. Commands wait for the current operation to finish before changing settings.
+
 Automatic compaction works as usual. To compact manually:
 
 ```text
@@ -73,7 +78,7 @@ You can add instructions:
 /compact Preserve the implementation decisions and remaining tasks.
 ```
 
-If the dedicated model fails, pi-cpt warns you and lets Pi retry with its default compaction model. This may incur an additional model request. Canceling compaction stops the attempt without a fallback request.
+If the dedicated model fails, pi-cpt warns you and lets Pi retry with its default compaction model. This may incur an additional model request. Canceling compaction stops the attempt without a fallback request. Each dedicated-model compaction has a fixed 180-second total timeout, shared by all split-turn requests. On timeout, pi-cpt aborts the request and falls back to Pi's default model. This limit does not cover the subsequent default-model fallback. Providers receive an abort signal; remote processing may continue if a provider ignores cancellation.
 
 Choose a compaction model with enough context capacity for your conversations. Successful compaction usage is included in Pi's session totals; failed dedicated-model attempts may incur costs that are absent from those totals.
 
@@ -85,8 +90,8 @@ Dedicated-model attempts are logged automatically to `~/.pi/agent/logs/pi-cpt.js
 - `request_start`: provider, model, message count, thinking level, and output token limit.
 - `request_end`: response received, elapsed `durationMs`, stop reason, and token/cost usage. A rejected response also produces `request_failed`.
 - `request_failed` and `compaction_error`: error name and message; the latter indicates whether fallback will be requested.
-- `compaction_end`: elapsed `durationMs` and outcome (`success`, `failed`, or `cancelled`). Successful compaction entries also store `details.durationMs` in the session.
+- `compaction_end`: elapsed `durationMs` and outcome (`success`, `failed`, `timeout`, or `cancelled`). Successful compaction entries also store `details.durationMs` in the session.
 
-Timing covers the dedicated attempt, not Pi's subsequent default-model fallback. Default-model requests and attempts cancelled before entering the extension are outside this log's scope. Durations use a monotonic clock.
+Timing covers the dedicated attempt, not Pi's subsequent default-model fallback. Default-model requests and attempts cancelled before entering the extension are outside this log's scope. Durations use a monotonic clock. `compaction_start` includes `timeoutMs`; timeout errors also record this limit and use the error name `TimeoutError`.
 
 Logs omit prompts, summaries, request headers, and configured credentials. Common bearer tokens and `sk-` keys are redacted from error messages, but provider errors may contain other sensitive data; review logs before sharing them. New log files use owner-only permissions. Logs append without automatic rotation; delete or archive the file as needed. A log write failure shows a warning and leaves compaction behavior unchanged.

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
@@ -10,7 +10,7 @@ import type {
 import { Effect } from "effect";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import piCpt from "../src/index.ts";
-import { compactWithModel, restoreFiles } from "../src/compaction.ts";
+import { COMPACTION_TIMEOUT_MS, compactWithModel, restoreFiles } from "../src/compaction.ts";
 import { decodeConfig, loadConfig } from "../src/config.ts";
 import { formatStatus } from "../src/status.ts";
 
@@ -84,6 +84,7 @@ const fixture = (reply = response()) => {
 };
 const dirs: string[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -92,6 +93,54 @@ const temp = async () => {
   dirs.push(dir);
   return dir;
 };
+
+test("cpt commands toggle routing and save the selected model without changing other settings", async () => {
+  const dir = await temp();
+  vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+  const path = join(dir, "pi-cpt.json");
+  await writeFile(path, JSON.stringify(config));
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
+  piCpt({
+    registerCommand: (_name, value) => {
+      command = value;
+    },
+    on: (name, handler) => {
+      handlers.set(name, handler as never);
+      return () => {};
+    },
+  } as ExtensionAPI);
+  const { ctx, raw, streamSimple } = fixture();
+  const custom = vi.fn().mockResolvedValue({ provider: "test", id: "chosen" });
+  const commandCtx = Object.assign(ctx, {
+    waitForIdle: vi.fn(),
+    ui: { ...ctx.ui, custom },
+    modelRegistry: Object.assign(ctx.modelRegistry, { getAvailable: () => [model] }),
+  }) as unknown as Parameters<typeof command.handler>[1];
+  await handlers.get("session_start")!({}, ctx);
+  await command.handler("", commandCtx);
+  expect(await handlers.get("session_before_compact")!(event(), ctx)).toBeUndefined();
+  expect(streamSimple).not.toHaveBeenCalled();
+  expect(raw.ui.setStatus).toHaveBeenLastCalledWith("pi-cpt", undefined);
+  await command.handler("model", commandCtx);
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ ...config, model: "chosen" });
+  expect(raw.ui.setStatus).toHaveBeenLastCalledWith("pi-cpt", undefined);
+  await command.handler("", commandCtx);
+  expect(raw.ui.setStatus).toHaveBeenLastCalledWith("pi-cpt", "cpt · 10% · chosen");
+  await handlers.get("session_before_compact")!(event(), ctx);
+  expect(streamSimple).toHaveBeenCalledTimes(1);
+  custom.mockResolvedValue(undefined);
+  await command.handler("model", commandCtx);
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ ...config, model: "chosen" });
+  await writeFile(path, "{");
+  custom.mockResolvedValue({ provider: "test", id: "other" });
+  await command.handler("model", commandCtx);
+  expect(await readFile(path, "utf8")).toBe("{");
+  expect(raw.ui.notify).toHaveBeenLastCalledWith(
+    expect.stringContaining("current setting unchanged"),
+    "warning",
+  );
+});
 
 describe("configuration", () => {
   test("validates strictly and defaults thinking to off", async () => {
@@ -119,6 +168,73 @@ describe("configuration", () => {
 });
 
 describe("native compaction", () => {
+  test("times out an unresponsive provider and requests fallback", async () => {
+    vi.useFakeTimers();
+    const { ctx, streamSimple } = fixture();
+    streamSimple.mockImplementation(() => ({ result: () => new Promise(() => {}) }));
+    const log = vi.fn();
+    const result = Effect.runPromise(Effect.isFailure(compactWithModel(event(), ctx, config, log)));
+    await vi.advanceTimersByTimeAsync(COMPACTION_TIMEOUT_MS);
+    expect(await result).toBe(true);
+    const entries = log.mock.calls.map(([entry]) => entry);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        event: "compaction_error",
+        fallback: true,
+        timeoutMs: COMPACTION_TIMEOUT_MS,
+        error: {
+          name: "TimeoutError",
+          message: `Compaction timed out after ${COMPACTION_TIMEOUT_MS} ms`,
+        },
+      }),
+    );
+    expect(entries.at(-1)).toMatchObject({ event: "compaction_end", outcome: "timeout" });
+    const options = (
+      streamSimple.mock.calls[0] as unknown as [unknown, unknown, { signal: AbortSignal }]
+    )[2];
+    expect(options.signal.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  test("split-turn requests share one timeout budget", async () => {
+    vi.useFakeTimers();
+    const { ctx, streamSimple } = fixture();
+    streamSimple.mockImplementationOnce(() => {
+      const reply = new Promise<AssistantMessage>((resolve) =>
+        setTimeout(() => resolve(response()), 120_000),
+      );
+      return { result: () => reply };
+    });
+    streamSimple.mockImplementationOnce(() => ({ result: () => new Promise(() => {}) }));
+    const input = event();
+    input.preparation.isSplitTurn = true;
+    input.preparation.turnPrefixMessages = [{ role: "user", content: "Continue", timestamp: 1 }];
+    const log = vi.fn();
+    const result = Effect.runPromise(Effect.isFailure(compactWithModel(input, ctx, config, log)));
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await result).toBe(true);
+    expect(log.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "timeout" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  test("user cancellation stops waiting without waiting for timeout", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const { ctx, streamSimple } = fixture();
+    streamSimple.mockImplementation(() => ({ result: () => new Promise(() => {}) }));
+    const log = vi.fn();
+    const result = Effect.runPromise(
+      Effect.isFailure(compactWithModel(event(controller.signal), ctx, config, log)),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    controller.abort();
+    expect(await result).toBe(true);
+    expect(log.mock.calls.map(([entry]) => entry)).toContainEqual(
+      expect.objectContaining({ event: "compaction_error", fallback: false }),
+    );
+    expect(log.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "cancelled" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
   test("logs correlated requests and persists elapsed time without prompt content", async () => {
     const { ctx } = fixture();
     const log = vi.fn();
@@ -199,7 +315,7 @@ describe("native compaction", () => {
     expect(JSON.stringify(call[1])).toContain("Preserve decisions");
     expect(call[2]).toMatchObject({
       reasoning: "low",
-      signal: input.signal,
+      signal: expect.any(AbortSignal),
       cacheRetention: "none",
       maxTokens: 8192,
     });
@@ -338,6 +454,7 @@ test("registered hooks fall back on failure, cancel without fallback and clear t
   await writeFile(join(dir, "pi-cpt.json"), JSON.stringify(config));
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   piCpt({
+    registerCommand: vi.fn(),
     on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
       handlers.set(name, handler);
       return () => {};

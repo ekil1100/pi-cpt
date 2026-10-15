@@ -9,6 +9,23 @@ import { Effect, Schema } from "effect";
 import type { Config } from "./config.ts";
 import { errorDetails, type Log } from "./log.ts";
 
+export const COMPACTION_TIMEOUT_MS = 180_000;
+
+// Stop waiting even when a provider does not settle its stream after abort.
+const waitForResponse = async <T>(promise: Promise<T>, signal: AbortSignal): Promise<T> => {
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+};
+
 const FileDetails = Schema.Struct({
   readFiles: Schema.Array(Schema.String),
   modifiedFiles: Schema.Array(Schema.String),
@@ -38,6 +55,11 @@ export const compactWithModel = (
     try: async (): Promise<SessionBeforeCompactResult> => {
       const compactionId = randomUUID();
       const started = performance.now();
+      const timeout = new AbortController();
+      const timeoutError = new Error(`Compaction timed out after ${COMPACTION_TIMEOUT_MS} ms`);
+      timeoutError.name = "TimeoutError";
+      const timer = setTimeout(() => timeout.abort(timeoutError), COMPACTION_TIMEOUT_MS);
+      const signal = AbortSignal.any([event.signal, timeout.signal]);
       const record: Log = (entry) => log({ compactionId, ...entry });
       record({
         event: "compaction_start",
@@ -45,6 +67,7 @@ export const compactWithModel = (
         model: config.model,
         reason: event.reason,
         tokensBefore: event.preparation.tokensBefore,
+        timeoutMs: COMPACTION_TIMEOUT_MS,
       });
       let outcome = "cancelled";
       try {
@@ -57,7 +80,7 @@ export const compactWithModel = (
           undefined,
           undefined,
           event.customInstructions,
-          event.signal,
+          signal,
           config.thinkingLevel,
           async (summaryModel, context, options) => {
             const requestId = randomUUID();
@@ -73,7 +96,7 @@ export const compactWithModel = (
             });
             try {
               const stream = ctx.modelRegistry.streamSimple(summaryModel, context, options);
-              const response = await stream.result();
+              const response = await waitForResponse(stream.result(), signal);
               record({
                 event: "request_end",
                 requestId,
@@ -112,6 +135,7 @@ export const compactWithModel = (
           },
         );
         if (event.signal.aborted) return { cancel: true };
+        signal.throwIfAborted();
         outcome = "success";
         return {
           compaction: {
@@ -125,14 +149,18 @@ export const compactWithModel = (
           },
         };
       } catch (error) {
-        outcome = event.signal.aborted ? "cancelled" : "failed";
+        const timedOut = timeout.signal.aborted && !event.signal.aborted;
+        const failure = timedOut ? timeoutError : error;
+        outcome = event.signal.aborted ? "cancelled" : timedOut ? "timeout" : "failed";
         record({
           event: "compaction_error",
-          error: errorDetails(error),
+          error: errorDetails(failure),
+          ...(timedOut ? { timeoutMs: COMPACTION_TIMEOUT_MS } : {}),
           fallback: !event.signal.aborted,
         });
-        throw error;
+        throw failure;
       } finally {
+        clearTimeout(timer);
         record({ event: "compaction_end", outcome, durationMs: performance.now() - started });
       }
     },
