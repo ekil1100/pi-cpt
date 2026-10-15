@@ -1,6 +1,6 @@
 {
   "name": "pi-cpt",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Dedicated compaction model and custom context status for Pi.",
   "keywords": [
     "compaction",
