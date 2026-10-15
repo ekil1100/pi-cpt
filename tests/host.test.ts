@@ -77,6 +77,7 @@ test("registered hooks preserve files and usage through dedicated -> default fal
     expect(first.details).toEqual({
       owner: "pi-cpt",
       version: 1,
+      durationMs: expect.any(Number),
       readFiles: ["kept-read.ts", "promoted.ts"],
       modifiedFiles: ["old-write.ts"],
     });
@@ -116,6 +117,7 @@ test("registered hooks preserve files and usage through dedicated -> default fal
     expect(third.details).toEqual({
       owner: "pi-cpt",
       version: 1,
+      durationMs: expect.any(Number),
       readFiles: ["kept-read.ts", "latest.ts"],
       modifiedFiles: ["new-read.ts", "newest.ts", "old-write.ts", "promoted.ts"],
     });

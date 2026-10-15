@@ -9,6 +9,7 @@ import { Effect } from "effect";
 import { loadConfig, type Config } from "./config.ts";
 import { compactWithModel, restoreFiles } from "./compaction.ts";
 import { formatStatus, type Phase } from "./status.ts";
+import { createLog } from "./log.ts";
 
 export default function piCpt(pi: ExtensionAPI): void {
   let config: Config | undefined;
@@ -54,7 +55,14 @@ export default function piCpt(pi: ExtensionAPI): void {
     phase = "compacting";
     render(ctx);
     return Effect.runPromise(
-      compactWithModel(event, ctx, config).pipe(
+      compactWithModel(
+        event,
+        ctx,
+        config,
+        createLog(join(getAgentDir(), "logs", "pi-cpt.jsonl"), () =>
+          notify(ctx, "pi-cpt: could not write compaction log."),
+        ),
+      ).pipe(
         Effect.catchAll(() => {
           if (event.signal.aborted)
             return Effect.succeed<SessionBeforeCompactResult>({ cancel: true });

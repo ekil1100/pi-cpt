@@ -76,3 +76,17 @@ You can add instructions:
 If the dedicated model fails, pi-cpt warns you and lets Pi retry with its default compaction model. This may incur an additional model request. Canceling compaction stops the attempt without a fallback request.
 
 Choose a compaction model with enough context capacity for your conversations. Successful compaction usage is included in Pi's session totals; failed dedicated-model attempts may incur costs that are absent from those totals.
+
+### Compaction logs
+
+Dedicated-model attempts are logged automatically to `~/.pi/agent/logs/pi-cpt.jsonl` (or `$PI_CODING_AGENT_DIR/logs/pi-cpt.jsonl`). Each line is a JSON object with a timestamp and a `compactionId`. Model requests also have a `requestId`; split-turn compaction can issue multiple requests.
+
+- `compaction_start`: provider, model, trigger reason, and context token count.
+- `request_start`: provider, model, message count, thinking level, and output token limit.
+- `request_end`: response received, elapsed `durationMs`, stop reason, and token/cost usage. A rejected response also produces `request_failed`.
+- `request_failed` and `compaction_error`: error name and message; the latter indicates whether fallback will be requested.
+- `compaction_end`: elapsed `durationMs` and outcome (`success`, `failed`, or `cancelled`). Successful compaction entries also store `details.durationMs` in the session.
+
+Timing covers the dedicated attempt, not Pi's subsequent default-model fallback. Default-model requests and attempts cancelled before entering the extension are outside this log's scope. Durations use a monotonic clock.
+
+Logs omit prompts, summaries, request headers, and configured credentials. Common bearer tokens and `sk-` keys are redacted from error messages, but provider errors may contain other sensitive data; review logs before sharing them. New log files use owner-only permissions. Logs append without automatic rotation; delete or archive the file as needed. A log write failure shows a warning and leaves compaction behavior unchanged.

@@ -119,6 +119,67 @@ describe("configuration", () => {
 });
 
 describe("native compaction", () => {
+  test("logs correlated requests and persists elapsed time without prompt content", async () => {
+    const { ctx } = fixture();
+    const log = vi.fn();
+    const input = event();
+    input.preparation.isSplitTurn = true;
+    input.preparation.turnPrefixMessages = [
+      { role: "user", content: "PRIVATE PROMPT", timestamp: 1 },
+    ];
+    const result = await Effect.runPromise(compactWithModel(input, ctx, config, log));
+    const entries = log.mock.calls.map(([entry]) => entry);
+    const starts = entries.filter((entry) => entry.event === "request_start");
+    expect(starts).toHaveLength(2);
+    expect(new Set(starts.map((entry) => entry.requestId)).size).toBe(2);
+    expect(new Set(entries.map((entry) => entry.compactionId)).size).toBe(1);
+    expect(entries.filter((entry) => entry.event === "request_end")).toHaveLength(2);
+    expect(entries.at(-1)).toMatchObject({
+      event: "compaction_end",
+      outcome: "success",
+      durationMs: expect.any(Number),
+    });
+    expect(entries.at(-1).durationMs).toBeGreaterThanOrEqual(0);
+    expect(result.compaction?.details).toMatchObject({ durationMs: expect.any(Number) });
+    expect(JSON.stringify(entries)).not.toContain("PRIVATE PROMPT");
+    expect(JSON.stringify(entries)).not.toContain("Preserve decisions");
+  });
+  test.each(["throw", "response", "cancel"])(
+    "logs %s failure reasons and outcome",
+    async (kind) => {
+      const controller = new AbortController();
+      const { ctx, streamSimple } = fixture({
+        ...response(),
+        stopReason: "error",
+        errorMessage: "Provider rate limit",
+      });
+      if (kind !== "response")
+        streamSimple.mockImplementation(() => {
+          if (kind === "cancel") controller.abort();
+          throw new Error("Provider rate limit");
+        });
+      const log = vi.fn();
+      expect(
+        await Effect.runPromise(
+          Effect.isFailure(compactWithModel(event(controller.signal), ctx, config, log)),
+        ),
+      ).toBe(true);
+      const entries = log.mock.calls.map(([entry]) => entry);
+      expect(entries).toContainEqual(
+        expect.objectContaining({
+          event: "request_failed",
+          error: { name: "Error", message: "Provider rate limit" },
+        }),
+      );
+      expect(entries).toContainEqual(
+        expect.objectContaining({ event: "compaction_error", fallback: kind !== "cancel" }),
+      );
+      expect(entries.at(-1)).toMatchObject({
+        event: "compaction_end",
+        outcome: kind === "cancel" ? "cancelled" : "failed",
+      });
+    },
+  );
   test("preserves instructions, boundaries, usage, thinking and registry routing", async () => {
     const { ctx, streamSimple } = fixture();
     const input = event();
